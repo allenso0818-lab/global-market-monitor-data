@@ -1,0 +1,1 @@
+# global-market-monitor-data
