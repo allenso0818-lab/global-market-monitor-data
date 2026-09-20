@@ -30,15 +30,22 @@ REGISTRY = {
 }
 
 def yahoo_symbol(ticker: str, location: str, spec: Spec) -> str:
-    ticker = ticker.strip().replace(".", "-")
+    ticker = re.sub(r"\s+", "-", ticker.strip().replace(".", "-"))
     # iShares US files use local exchange tickers.  Map those explicitly rather
     # than silently dropping non-US constituents from a full ETF universe.
     if spec.yahoo_index == "^FTSE": return f"{ticker}.L"
+    # iShares country labels do not always identify the listing exchange.  Apply
+    # the deterministic number formats first; do not append a China suffix to a
+    # US-listed ADR such as PDD or TME.
+    if location == "China" and ticker.isdigit():
+        if len(ticker) <= 5:
+            return ticker.zfill(4) + ".HK"
+        return ticker + (".SS" if ticker.startswith(("6", "9")) else ".SZ")
     suffix = {
       "Hong Kong": ".HK", "Taiwan": ".TW", "South Korea": ".KS",
       "India": ".NS", "Brazil": ".SA", "Mexico": ".MX", "South Africa": ".JO",
       "Malaysia": ".KL", "Indonesia": ".JK", "Thailand": ".BK", "Turkey": ".IS",
-      "Poland": ".WA", "China": ".SS", "Saudi Arabia": ".SR",
+      "Poland": ".WA", "Saudi Arabia": ".SR",
     }.get(location)
     if suffix:
         if suffix == ".HK" and ticker.isdigit(): ticker = ticker.zfill(4)
@@ -48,11 +55,14 @@ def yahoo_symbol(ticker: str, location: str, spec: Spec) -> str:
 def holdings(spec: Spec):
     if not spec.url: raise RuntimeError("full constituent source not yet validated")
     r = SESSION.get(spec.url, timeout=45); r.raise_for_status()
-    lines = r.text.splitlines(); start = next(i for i,l in enumerate(lines) if l.startswith("Ticker,"))
+    lines = r.text.splitlines()
+    # iShares exports vary between regions ("Ticker" versus "Issuer Ticker").
+    # Locate a genuine holdings header instead of silently failing on a valid CSV.
+    start = next(i for i, line in enumerate(lines) if "Ticker" in line and "Weight" in line and "," in line)
     rows = list(csv.DictReader(io.StringIO("\n".join(lines[start:]))))
     result = []
     for row in rows:
-        ticker = (row.get("Ticker") or "").strip()
+        ticker = (row.get("Ticker") or row.get("Issuer Ticker") or "").strip()
         location = (row.get("Location") or row.get("Country") or "").strip()
         weight = float((row.get("Weight (%)") or "0").replace(",", "") or 0)
         if not ticker or weight <= 0 or (row.get("Asset Class") or "").lower() != "equity": continue
@@ -65,13 +75,13 @@ def enrich(rows):
     now = datetime.now(timezone.utc).isoformat()
     frames = {}
     # Small batches avoid a single huge Yahoo request being rate-limited.
-    for start in range(0, len(symbols), 80):
-        batch = symbols[start:start + 80]
+    for start in range(0, len(symbols), 25):
+        batch = symbols[start:start + 25]
         try:
-            data = yf.download(batch, period="5d", interval="1d", group_by="ticker", threads=True, progress=False, auto_adjust=False)
+            data = yf.download(batch, period="5d", interval="1d", group_by="ticker", threads=False, progress=False, auto_adjust=False)
             for symbol in batch: frames[symbol] = data[symbol] if len(batch) > 1 else data
         except Exception as exc: logging.warning("Yahoo batch failed: %s", exc)
-        if start + 80 < len(symbols): time.sleep(1)
+        if start + 25 < len(symbols): time.sleep(2)
     for r in rows:
         try:
             df = frames[r["ticker"]]
