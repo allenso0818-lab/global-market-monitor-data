@@ -24,7 +24,7 @@ REGISTRY = {
  "topix": Spec("TOPIX", "^TOPX", "Official / ETF Proxy", None, 1500, 2500, "JPX constituent source awaiting verification"),
  "hsi": Spec("Hang Seng Index", "^HSI", "Official / ETF Proxy", None, 70, 100, "Hang Seng Indexes constituent source awaiting verification"),
  "shanghai": Spec("Shanghai Composite", "000001.SS", "Official / ETF Proxy", None, 1200, 3000, "SSE constituent source awaiting verification"),
- "ftse": Spec("FTSE 100", "^FTSE", "ETF Proxy", "https://www.ishares.com/uk/individual/en/products/251795/ishares-core-ftse-100-ucits-etf/latest-holdings.csv", 90, 130, "iShares Core FTSE 100 UCITS ETF (ISF)"),
+ "ftse": Spec("FTSE 100", "^FTSE", "ETF Proxy", "https://www.ishares.com/uk/individual/en/products/251795/ishares-ftse-100-ucits-etf/1467271812596.ajax?fileType=csv&fileName=ISF_holdings&dataType=fund", 90, 130, "iShares Core FTSE 100 UCITS ETF (ISF)"),
  "eurofirst": Spec("FTSE Eurofirst 300", "^FTEU3", "Official / ETF Proxy", None, 250, 400, "Free complete tracking holdings source awaiting verification"),
  "msci": Spec("MSCI Emerging Markets", "EEM", "ETF Proxy", "https://www.ishares.com/us/products/239637/ishares-msci-emerging-markets-etf/latest-holdings.csv", 500, 2000, "iShares MSCI Emerging Markets ETF (EEM)"),
 }
