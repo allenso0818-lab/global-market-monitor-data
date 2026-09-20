@@ -1,0 +1,39 @@
+name: Refresh heatmap snapshots
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily after major Asian-market close; timestamps in snapshots are HKT.
+    - cron: "30 09 * * 1-5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heatmap-snapshot-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install data dependencies
+        run: pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Build and validate full-universe snapshots
+        run: python scripts/refresh_heatmaps.py
+
+      - name: Commit validated snapshots
+        run: |
+          git config user.name "global-market-monitor-data[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add snapshots
+          git diff --cached --quiet || git commit -m "data: refresh heatmap snapshots"
+          git push
