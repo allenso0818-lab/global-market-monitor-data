@@ -1,6 +1,6 @@
 """Daily full-universe heatmap snapshots. No representative-stock fallback."""
 from __future__ import annotations
-import csv, io, json, logging, re
+import csv, io, json, logging, re, time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,8 +29,20 @@ REGISTRY = {
  "msci": Spec("MSCI Emerging Markets", "EEM", "ETF Proxy", "https://www.ishares.com/us/products/239637/ishares-msci-emerging-markets-etf/latest-holdings.csv", 500, 2000, "iShares MSCI Emerging Markets ETF (EEM)"),
 }
 
-def yahoo_symbol(ticker: str) -> str:
+def yahoo_symbol(ticker: str, location: str, spec: Spec) -> str:
     ticker = ticker.strip().replace(".", "-")
+    # iShares US files use local exchange tickers.  Map those explicitly rather
+    # than silently dropping non-US constituents from a full ETF universe.
+    if spec.yahoo_index == "^FTSE": return f"{ticker}.L"
+    suffix = {
+      "Hong Kong": ".HK", "Taiwan": ".TW", "South Korea": ".KS",
+      "India": ".NS", "Brazil": ".SA", "Mexico": ".MX", "South Africa": ".JO",
+      "Malaysia": ".KL", "Indonesia": ".JK", "Thailand": ".BK", "Turkey": ".IS",
+      "Poland": ".WA", "China": ".SS", "Saudi Arabia": ".SR",
+    }.get(location)
+    if suffix:
+        if suffix == ".HK" and ticker.isdigit(): ticker = ticker.zfill(4)
+        return ticker + suffix
     return ticker
 
 def holdings(spec: Spec):
@@ -41,19 +53,28 @@ def holdings(spec: Spec):
     result = []
     for row in rows:
         ticker = (row.get("Ticker") or "").strip()
+        location = (row.get("Location") or row.get("Country") or "").strip()
         weight = float((row.get("Weight (%)") or "0").replace(",", "") or 0)
         if not ticker or weight <= 0 or (row.get("Asset Class") or "").lower() != "equity": continue
-        result.append({"ticker": yahoo_symbol(ticker), "name": row.get("Name") or ticker,
+        result.append({"ticker": yahoo_symbol(ticker, location, spec), "name": row.get("Name") or ticker,
           "sector": row.get("Sector") or "Other", "source_weight": weight})
     return result
 
 def enrich(rows):
     symbols = [r["ticker"] for r in rows]
-    frame = yf.download(symbols, period="5d", interval="1d", group_by="ticker", threads=True, progress=False)
     now = datetime.now(timezone.utc).isoformat()
+    frames = {}
+    # Small batches avoid a single huge Yahoo request being rate-limited.
+    for start in range(0, len(symbols), 80):
+        batch = symbols[start:start + 80]
+        try:
+            data = yf.download(batch, period="5d", interval="1d", group_by="ticker", threads=True, progress=False, auto_adjust=False)
+            for symbol in batch: frames[symbol] = data[symbol] if len(batch) > 1 else data
+        except Exception as exc: logging.warning("Yahoo batch failed: %s", exc)
+        if start + 80 < len(symbols): time.sleep(1)
     for r in rows:
         try:
-            df = frame[r["ticker"]] if len(symbols)>1 else frame
+            df = frames[r["ticker"]]
             closes = df["Close"].dropna()
             r["price"] = round(float(closes.iloc[-1]), 6)
             r["daily_change"] = round(float(closes.iloc[-1]-closes.iloc[-2]), 6)
