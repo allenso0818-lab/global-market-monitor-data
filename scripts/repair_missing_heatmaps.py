@@ -139,7 +139,7 @@ def russell():
         if source_weight <= 0:
             source_weight = 1e-9
         rows.append({"ticker": ticker, "name": x.get("Name") or ticker, "sector": x.get("Sector") or "Other", "source_weight": source_weight, "price": num(x.get("Price"))})
-    enrich(rows)
+    enrich(rows, limit=700)
     normalize_and_write("russell", "Russell 2000", "Full IWM tracking-ETF holdings proxy", "iShares Russell 2000 ETF (IWM) latest holdings", rows, 1700, 2200)
 
 
@@ -204,7 +204,7 @@ def topix():
         if weight <= 0:
             continue
         rows.append({"ticker": code + ".T", "name": str(x[name_col]).strip(), "source_weight": weight})
-    enrich(rows)
+    enrich(rows, limit=700)
     normalize_and_write("topix", "TOPIX", "Official JPX free-float component weights", "JPX official TOPIX Component Stocks Weight", rows, 1400, 2200)
 
 
