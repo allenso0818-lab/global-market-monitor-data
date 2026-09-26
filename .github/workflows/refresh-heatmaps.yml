@@ -11,7 +11,6 @@ on:
       - "requirements.txt"
       - ".github/workflows/refresh-heatmaps.yml"
   schedule:
-    # Daily after major Asian-market close; timestamps in snapshots are HKT.
     - cron: "30 09 * * 1-5"
 
 permissions:
@@ -24,27 +23,20 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install data dependencies
-        run: pip install --disable-pip-version-check -r requirements.txt
-
-      - name: Build and validate full-universe snapshots
-        run: |
-          python scripts/refresh_heatmaps.py
-          python scripts/repair_missing_heatmaps.py
-          python scripts/refresh_shanghai_sse.py
-
-      - name: Commit validated snapshots
+        run: pip install --disable-pip-version-check requests
+      - name: Build Shanghai official SSE snapshot
+        run: python scripts/refresh_shanghai_sse.py
+      - name: Commit Shanghai snapshot
         run: |
           git config user.name "global-market-monitor-data[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add snapshots
-          git diff --cached --quiet || git commit -m "data: refresh heatmap snapshots"
+          git add snapshots/shanghai.json
+          git diff --cached --quiet || git commit -m "data: refresh Shanghai heatmap snapshot"
           git push
