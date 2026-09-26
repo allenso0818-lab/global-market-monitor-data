@@ -48,28 +48,36 @@ def enrich(rows, limit=None):
         targets = targets[:limit]
     by_symbol = {r["ticker"]: r for r in targets}
     symbols = list(by_symbol)
-    for start in range(0, len(symbols), 200):
-        batch = symbols[start:start + 200]
+    for start in range(0, len(symbols), 100):
+        batch = symbols[start:start + 100]
         if not batch:
             continue
-        try:
-            data = yf.download(batch, period="5d", interval="1d", group_by="ticker", threads=True, progress=False, auto_adjust=False)
-            for symbol in batch:
-                try:
-                    frame = data[symbol] if len(batch) > 1 else data
-                    closes = frame["Close"].dropna()
-                    if len(closes) < 2:
-                        continue
-                    row = by_symbol[symbol]
-                    last = float(closes.iloc[-1]); prev = float(closes.iloc[-2])
-                    row["price"] = round(last, 6)
-                    row["daily_change"] = round(last - prev, 6)
-                    row["daily_change_pct"] = round((last / prev - 1) * 100, 6)
-                    row["price_timestamp"] = NOW()
-                except Exception:
-                    pass
-        except Exception as exc:
-            logging.warning("quote batch failed: %s", exc)
+        data = None
+        for attempt in range(3):
+            try:
+                data = yf.download(batch, period="5d", interval="1d", group_by="ticker", threads=True, progress=False, auto_adjust=False)
+                break
+            except Exception as exc:
+                logging.warning("quote batch %d-%d attempt %d failed: %s", start, start + len(batch), attempt + 1, exc)
+                time.sleep(1.0 * (attempt + 1))
+        if data is None:
+            continue
+        for symbol in batch:
+            try:
+                frame = data[symbol] if len(batch) > 1 else data
+                closes = frame["Close"].dropna()
+                if len(closes) < 2:
+                    continue
+                row = by_symbol[symbol]
+                last = float(closes.iloc[-1]); prev = float(closes.iloc[-2])
+                row["price"] = round(last, 6)
+                row["daily_change"] = round(last - prev, 6)
+                row["daily_change_pct"] = round((last / prev - 1) * 100, 6)
+                row["price_timestamp"] = NOW()
+            except Exception:
+                pass
+        if start + 100 < len(symbols):
+            time.sleep(0.4)
     return rows
 
 
@@ -131,7 +139,7 @@ def russell():
         if source_weight <= 0:
             source_weight = 1e-9
         rows.append({"ticker": ticker, "name": x.get("Name") or ticker, "sector": x.get("Sector") or "Other", "source_weight": source_weight, "price": num(x.get("Price"))})
-    enrich(rows, limit=700)
+    enrich(rows)
     normalize_and_write("russell", "Russell 2000", "Full IWM tracking-ETF holdings proxy", "iShares Russell 2000 ETF (IWM) latest holdings", rows, 1700, 2200)
 
 
@@ -196,7 +204,7 @@ def topix():
         if weight <= 0:
             continue
         rows.append({"ticker": code + ".T", "name": str(x[name_col]).strip(), "source_weight": weight})
-    enrich(rows, limit=700)
+    enrich(rows)
     normalize_and_write("topix", "TOPIX", "Official JPX free-float component weights", "JPX official TOPIX Component Stocks Weight", rows, 1400, 2200)
 
 
