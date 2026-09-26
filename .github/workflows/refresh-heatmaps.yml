@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - "scripts/refresh_heatmaps.py"
+      - "scripts/repair_missing_heatmaps.py"
       - "requirements.txt"
       - ".github/workflows/refresh-heatmaps.yml"
   schedule:
@@ -34,7 +35,9 @@ jobs:
         run: pip install --disable-pip-version-check -r requirements.txt
 
       - name: Build and validate full-universe snapshots
-        run: python scripts/refresh_heatmaps.py
+        run: |
+          python scripts/refresh_heatmaps.py
+          python scripts/repair_missing_heatmaps.py
 
       - name: Commit validated snapshots
         run: |
