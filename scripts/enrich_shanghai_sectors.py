@@ -3,6 +3,7 @@
 Uses broad CSRC industry groups (A-S) from SSE detail pages. This is a
 server-rendered fallback when the fine-grained industry table/API is unavailable.
 It only fills missing/Other sectors and preserves the universe, weights and quotes.
+This file is also the workflow trigger for the validated fallback refresh.
 """
 from __future__ import annotations
 
