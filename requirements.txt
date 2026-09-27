@@ -3,3 +3,4 @@ requests>=2.32,<3
 yfinance>=0.2.54,<1
 lxml>=5,<7
 xlrd>=2.0,<3
+openpyxl>=3.1,<4
