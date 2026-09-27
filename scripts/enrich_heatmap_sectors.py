@@ -200,10 +200,12 @@ def hsi_map() -> dict[str, str]:
         except Exception:
             continue
 
-    # Recent additions may not yet be reflected in mirrored tables. These are
-    # all non-financial/non-property/non-utility constituents and therefore sit
-    # in the HSI Commerce & Industry sub-index until the source tables catch up.
-    for ticker in ["1801.HK", "3750.HK", "6181.HK"]:
+    # Recent additions or lagging mirror tables. These all belong to the HSI
+    # Commerce & Industry sub-index rather than Finance/Utilities/Properties.
+    for ticker in [
+        "1801.HK", "3750.HK", "6181.HK",
+        "0728.HK", "3993.HK", "9901.HK", "2600.HK",
+    ]:
         result.setdefault(ticker, "Commerce & Industry")
 
     snapshot, _ = load_snapshot("hsi")
@@ -217,40 +219,61 @@ def hsi_map() -> dict[str, str]:
 
 
 def shanghai_map() -> dict[str, str]:
-    # Prefer the official SSE industry-classification pages. This avoids a
-    # single-point dependency on Eastmoney's occasionally unavailable API.
-    main_url = "https://www.sse.com.cn/assortment/stock/areatrade/trade/"
-    response = S.get(main_url, timeout=45)
-    response.raise_for_status()
+    # Prefer the official SSE industry-classification pages. The STAR mirror
+    # currently exposes the full server-rendered table more reliably than the
+    # main host, so try it first and keep the main host as a fallback.
+    main_urls = [
+        "https://star.sse.com.cn/assortment/stock/areatrade/trade/",
+        "https://www.sse.com.cn/assortment/stock/areatrade/trade/",
+    ]
     industry_rows: list[tuple[str, str]] = []
-    for df in pd.read_html(io.StringIO(response.text)):
-        cols = {str(c).strip(): c for c in df.columns}
-        code_col = next((c for k, c in cols.items() if "行业代码" in k), None)
-        name_col = next((c for k, c in cols.items() if "行业名称" in k), None)
-        if code_col is None or name_col is None:
+    for main_url in main_urls:
+        try:
+            response = S.get(main_url, timeout=45)
+            response.raise_for_status()
+            for df in pd.read_html(io.StringIO(response.text)):
+                cols = {str(c).strip(): c for c in df.columns}
+                code_col = next((c for k, c in cols.items() if "行业代码" in k), None)
+                name_col = next((c for k, c in cols.items() if "行业名称" in k), None)
+                if code_col is None or name_col is None:
+                    continue
+                for _, row in df.iterrows():
+                    code = str(row[code_col]).strip()
+                    name = str(row[name_col]).strip()
+                    if re.fullmatch(r"[A-Z]\d{2}", code) and name and name.lower() != "nan":
+                        industry_rows.append((code, name))
+            if industry_rows:
+                break
+        except Exception:
             continue
-        for _, row in df.iterrows():
-            code = str(row[code_col]).strip()
-            name = str(row[name_col]).strip()
-            if re.fullmatch(r"[A-Z]\d{2}", code) and name and name.lower() != "nan":
-                industry_rows.append((code, name))
     if not industry_rows:
         raise RuntimeError("SSE industry classification table unavailable")
 
     result: dict[str, str] = {}
     for code, industry_name in industry_rows:
-        detail_url = f"https://www.sse.com.cn/assortment/stock/areatrade/trade/detail.shtml?csrcCode={code}"
-        detail = S.get(detail_url, timeout=45)
-        detail.raise_for_status()
-        for df in pd.read_html(io.StringIO(detail.text)):
-            cols = {str(c).strip(): c for c in df.columns}
-            stock_col = next((c for k, c in cols.items() if "A股代码" in k or "上市公司代码" in k), None)
-            if stock_col is None:
+        detail_urls = [
+            f"https://star.sse.com.cn/assortment/stock/areatrade/trade/detail.shtml?csrcCode={code}",
+            f"https://www.sse.com.cn/assortment/stock/areatrade/trade/detail.shtml?csrcCode={code}",
+        ]
+        for detail_url in detail_urls:
+            try:
+                detail = S.get(detail_url, timeout=45)
+                detail.raise_for_status()
+                found = False
+                for df in pd.read_html(io.StringIO(detail.text)):
+                    cols = {str(c).strip(): c for c in df.columns}
+                    stock_col = next((c for k, c in cols.items() if "A股代码" in k or "上市公司代码" in k), None)
+                    if stock_col is None:
+                        continue
+                    for value in df[stock_col].tolist():
+                        stock = re.sub(r"\D", "", str(value))
+                        if re.fullmatch(r"6\d{5}", stock):
+                            result[stock + ".SS"] = industry_name
+                            found = True
+                if found:
+                    break
+            except Exception:
                 continue
-            for value in df[stock_col].tolist():
-                stock = re.sub(r"\D", "", str(value))
-                if re.fullmatch(r"6\d{5}", stock):
-                    result[stock + ".SS"] = industry_name
     if len(result) < 1800:
         raise RuntimeError(f"SSE sector map incomplete: {len(result)}")
     return result
