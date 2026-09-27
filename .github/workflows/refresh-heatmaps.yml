@@ -8,6 +8,7 @@ on:
       - "scripts/refresh_heatmaps.py"
       - "scripts/repair_missing_heatmaps.py"
       - "scripts/enrich_heatmap_sectors.py"
+      - "scripts/enrich_shanghai_sectors.py"
       - "scripts/refresh_shanghai_sse.py"
       - "requirements.txt"
   schedule:
@@ -38,6 +39,37 @@ jobs:
           python scripts/repair_missing_heatmaps.py
           python scripts/refresh_shanghai_sse.py
           python scripts/enrich_heatmap_sectors.py
+          python scripts/enrich_shanghai_sectors.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          minimum = {
+              "sp": 0.95, "nasdaq": 0.95, "russell": 0.95,
+              "ftse": 0.95, "stoxx": 0.95, "nikkei": 0.95,
+              "topix": 0.95, "hsi": 0.95, "shanghai": 0.95,
+              "msci": 0.95,
+          }
+          failures = []
+          for key, threshold in minimum.items():
+              path = Path("snapshots") / f"{key}.json"
+              if not path.exists():
+                  failures.append(f"{key}: snapshot missing")
+                  continue
+              data = json.loads(path.read_text(encoding="utf-8"))
+              rows = data.get("constituents", [])
+              covered = sum(
+                  bool(str(r.get("sector") or "").strip())
+                  and str(r.get("sector") or "").strip().lower() != "other"
+                  for r in rows
+              )
+              ratio = covered / len(rows) if rows else 0
+              print(f"SECTOR_GATE {key}: {covered}/{len(rows)} ({ratio:.1%})")
+              if ratio < threshold:
+                  failures.append(f"{key}: {ratio:.1%} < {threshold:.0%}")
+          if failures:
+              raise SystemExit("Sector coverage gate failed: " + "; ".join(failures))
+          PY
       - name: Commit validated snapshots
         run: |
           git config user.name "global-market-monitor-data[bot]"
