@@ -11,13 +11,11 @@ import io
 import json
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urljoin
 
 import pandas as pd
 import requests
-import yfinance as yf
 from lxml import html as lxml_html
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -124,103 +122,137 @@ def nikkei_map() -> dict[str, str]:
 
 
 def topix_map() -> dict[str, str]:
-    page_url = "https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html"
-    page = S.get(page_url, timeout=45)
-    page.raise_for_status()
-    links = re.findall(r'href=["\']([^"\']+\.xls(?:\?[^"\']*)?)["\']', page.text, re.I)
-    if not links:
-        # Japanese page historically exposes the same free listed-issues workbook.
-        jp_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
-        page = S.get(jp_url, timeout=45)
-        page.raise_for_status()
-        links = re.findall(r'href=["\']([^"\']+\.xls(?:\?[^"\']*)?)["\']', page.text, re.I)
-    if not links:
-        raise RuntimeError("JPX listed-issues workbook link not found")
-    workbook_url = urljoin(page.url, links[0])
-    data = S.get(workbook_url, timeout=60)
-    data.raise_for_status()
-    df = pd.read_excel(io.BytesIO(data.content), dtype=str)
-    cols = {str(c).strip().lower(): c for c in df.columns}
-    code_col = next((c for k, c in cols.items() if k == "code" or "code" == k.split()[-1]), None)
-    sector_col = next((c for k, c in cols.items() if "33 sector" in k and "code" not in k), None)
-    if code_col is None:
-        code_col = next((c for k, c in cols.items() if "コード" in k), None)
-    if sector_col is None:
-        sector_col = next((c for k, c in cols.items() if "33業種" in k and "コード" not in k), None)
-    if code_col is None or sector_col is None:
-        raise RuntimeError(f"JPX sector columns not found: {list(df.columns)}")
-    result = {}
-    for _, row in df.iterrows():
-        code = str(row[code_col]).strip()
-        sector = str(row[sector_col]).strip()
-        if re.fullmatch(r"(?:\d{4}|\d{3}[A-Z])", code) and sector and sector.lower() != "nan":
-            result[code + ".T"] = sector
-    if len(result) < 1000:
-        raise RuntimeError(f"JPX sector map incomplete: {len(result)}")
+    # JPX publishes a stable listed-issues workbook containing the official
+    # 33-sector classification. Use the stable file first, then discover a
+    # replacement link if JPX changes the attachment path.
+    workbook_urls = [
+        "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls",
+    ]
+    for page_url in [
+        "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html",
+        "https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html",
+    ]:
+        try:
+            page = S.get(page_url, timeout=45)
+            page.raise_for_status()
+            links = re.findall(r'href=["\']([^"\']+\.(?:xls|xlsx)(?:\?[^"\']*)?)["\']', page.text, re.I)
+            workbook_urls.extend(urljoin(page.url, link) for link in links)
+        except Exception:
+            pass
+
+    last_error = None
+    for workbook_url in dict.fromkeys(workbook_urls):
+        try:
+            data = S.get(workbook_url, timeout=60)
+            data.raise_for_status()
+            df = pd.read_excel(io.BytesIO(data.content), dtype=str)
+            cols = {str(c).strip(): c for c in df.columns}
+            code_col = next((c for k, c in cols.items() if k in {"コード", "Code"}), None)
+            sector_col = next((c for k, c in cols.items() if k in {"33業種区分", "33 Sector(name)", "33 Sector"}), None)
+            if code_col is None:
+                code_col = next((c for k, c in cols.items() if "コード" in k or k.lower() == "code"), None)
+            if sector_col is None:
+                sector_col = next((c for k, c in cols.items() if ("33業種" in k and "コード" not in k) or ("33 sector" in k.lower() and "code" not in k.lower())), None)
+            if code_col is None or sector_col is None:
+                raise RuntimeError(f"JPX sector columns not found: {list(df.columns)}")
+            result = {}
+            for _, row in df.iterrows():
+                code = str(row[code_col]).strip()
+                sector = str(row[sector_col]).strip()
+                if re.fullmatch(r"(?:\d{4}|\d{3}[A-Z])", code) and sector and sector.lower() != "nan":
+                    result[code + ".T"] = sector
+            if len(result) >= 1000:
+                return result
+            last_error = RuntimeError(f"JPX sector map incomplete: {len(result)}")
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"JPX listed-issues sector source unavailable: {last_error}")
+
+
+def hsi_map() -> dict[str, str]:
+    # The HSI's traditional sector/sub-index classification is available in a
+    # structured components table. It is a robust fallback when Yahoo profile
+    # metadata blocks automated access.
+    urls = [
+        "https://en.wikipedia.org/wiki/Hang_Seng_Index",
+        "https://zh.wikipedia.org/wiki/%E6%81%92%E7%94%9F%E6%8C%87%E6%95%B8",
+    ]
+    result: dict[str, str] = {}
+    for url in urls:
+        try:
+            response = S.get(url, timeout=45)
+            response.raise_for_status()
+            for df in pd.read_html(io.StringIO(response.text)):
+                cols = {str(c).strip().lower(): c for c in df.columns}
+                ticker_col = next((c for k, c in cols.items() if "ticker" in k or "股份代號" in k), None)
+                sector_col = next((c for k, c in cols.items() if "sub-index" in k or "sector" in k or "行業" in k or "分类" in k or "分類" in k), None)
+                if ticker_col is None or sector_col is None:
+                    continue
+                for _, row in df.iterrows():
+                    raw_ticker = str(row[ticker_col])
+                    match = re.search(r"(\d{1,5})", raw_ticker.replace(",", ""))
+                    if not match:
+                        continue
+                    sector = str(row[sector_col]).strip()
+                    if not sector or sector.lower() == "nan":
+                        continue
+                    result[match.group(1).zfill(4) + ".HK"] = sector
+        except Exception:
+            continue
+
+    # Recent additions may not yet be reflected in mirrored tables. These are
+    # all non-financial/non-property/non-utility constituents and therefore sit
+    # in the HSI Commerce & Industry sub-index until the source tables catch up.
+    for ticker in ["1801.HK", "3750.HK", "6181.HK"]:
+        result.setdefault(ticker, "Commerce & Industry")
+
+    snapshot, _ = load_snapshot("hsi")
+    if snapshot:
+        missing = [str(r.get("ticker") or "") for r in snapshot.get("constituents", []) if str(r.get("ticker") or "") not in result]
+        if missing:
+            logging.warning("HSI sector source missing %d tickers: %s", len(missing), ", ".join(missing[:12]))
+    if len(result) < 80:
+        raise RuntimeError(f"HSI sector map incomplete: {len(result)}")
     return result
 
 
 def shanghai_map() -> dict[str, str]:
-    hosts = [
-        "https://82.push2.eastmoney.com/api/qt/clist/get",
-        "https://push2delay.eastmoney.com/api/qt/clist/get",
-    ]
-    result = {}
-    for page in range(1, 60):
-        params = {
-            "pn": str(page), "pz": "100", "po": "1", "np": "1",
-            "ut": "bd1d9ddb04089700cf9c27f6f7426281", "fltt": "2", "invt": "2", "fid": "f3",
-            "fs": "m:1 t:2,m:1 t:23,m:1 t:3",
-            "fields": "f12,f14,f100",
-        }
-        chunk = None
-        for host in hosts:
-            try:
-                response = S.get(host, params=params, timeout=30)
-                response.raise_for_status()
-                chunk = ((response.json().get("data") or {}).get("diff") or [])
-                break
-            except Exception:
+    # Prefer the official SSE industry-classification pages. This avoids a
+    # single-point dependency on Eastmoney's occasionally unavailable API.
+    main_url = "https://www.sse.com.cn/assortment/stock/areatrade/trade/"
+    response = S.get(main_url, timeout=45)
+    response.raise_for_status()
+    industry_rows: list[tuple[str, str]] = []
+    for df in pd.read_html(io.StringIO(response.text)):
+        cols = {str(c).strip(): c for c in df.columns}
+        code_col = next((c for k, c in cols.items() if "行业代码" in k), None)
+        name_col = next((c for k, c in cols.items() if "行业名称" in k), None)
+        if code_col is None or name_col is None:
+            continue
+        for _, row in df.iterrows():
+            code = str(row[code_col]).strip()
+            name = str(row[name_col]).strip()
+            if re.fullmatch(r"[A-Z]\d{2}", code) and name and name.lower() != "nan":
+                industry_rows.append((code, name))
+    if not industry_rows:
+        raise RuntimeError("SSE industry classification table unavailable")
+
+    result: dict[str, str] = {}
+    for code, industry_name in industry_rows:
+        detail_url = f"https://www.sse.com.cn/assortment/stock/areatrade/trade/detail.shtml?csrcCode={code}"
+        detail = S.get(detail_url, timeout=45)
+        detail.raise_for_status()
+        for df in pd.read_html(io.StringIO(detail.text)):
+            cols = {str(c).strip(): c for c in df.columns}
+            stock_col = next((c for k, c in cols.items() if "A股代码" in k or "上市公司代码" in k), None)
+            if stock_col is None:
                 continue
-        if chunk is None:
-            raise RuntimeError(f"Shanghai sector page {page} unavailable")
-        if not chunk:
-            break
-        for row in chunk:
-            code = str(row.get("f12") or "").strip()
-            sector = str(row.get("f100") or "").strip()
-            if code and sector and sector not in {"-", "None"}:
-                result[code + ".SS"] = sector
-        if len(chunk) < 100:
-            break
-    if len(result) < 1000:
-        raise RuntimeError(f"Shanghai sector map incomplete: {len(result)}")
-    return result
-
-
-def hsi_yahoo_map() -> dict[str, str]:
-    snapshot, _ = load_snapshot("hsi")
-    if not snapshot:
-        return {}
-    tickers = [str(r.get("ticker") or "") for r in snapshot.get("constituents", []) if missing_sector(r)]
-
-    def fetch_one(symbol: str):
-        try:
-            info = yf.Ticker(symbol).get_info()
-            sector = str(info.get("sector") or "").strip()
-            return symbol, sector if sector else None
-        except Exception:
-            return symbol, None
-
-    result = {}
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(fetch_one, symbol) for symbol in tickers]
-        for future in as_completed(futures):
-            symbol, sector = future.result()
-            if sector:
-                result[symbol] = sector
-    if len(result) < max(30, len(tickers) // 2):
-        raise RuntimeError(f"HSI Yahoo sector enrichment incomplete: {len(result)}/{len(tickers)}")
+            for value in df[stock_col].tolist():
+                stock = re.sub(r"\D", "", str(value))
+                if re.fullmatch(r"6\d{5}", stock):
+                    result[stock + ".SS"] = industry_name
+    if len(result) < 1800:
+        raise RuntimeError(f"SSE sector map incomplete: {len(result)}")
     return result
 
 
@@ -240,7 +272,7 @@ for key, builder in [
     ("ftse", ftse_map),
     ("nikkei", nikkei_map),
     ("topix", topix_map),
-    ("hsi", hsi_yahoo_map),
+    ("hsi", hsi_map),
     ("shanghai", shanghai_map),
 ]:
     try:
