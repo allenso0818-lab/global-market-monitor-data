@@ -3,7 +3,7 @@
 This stage runs after the existing constituent/price refreshes. It only fills rows
 whose sector is missing/Other, preserves the existing universe, weights and quote
 coverage, and never overwrites a validated snapshot if an upstream sector source
-fails.
+fails. The final audit prints per-index classified coverage for verification.
 """
 from __future__ import annotations
 
